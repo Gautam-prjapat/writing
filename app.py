@@ -32,11 +32,11 @@ def ensure_weights():
     os.makedirs(os.path.dirname(WEIGHTS_PATH), exist_ok=True)
     with st.spinner("Downloading model weights (first run only)…"):
         try:
+            # FIXED: Removed `fuzzy=True` which caused the crash on newer gdown versions
             gdown.download(
                 id=WEIGHTS_FILE_ID,
                 output=WEIGHTS_PATH,
                 quiet=False,
-                fuzzy=True,
             )
         except Exception as e:
             st.error(
