@@ -32,7 +32,6 @@ def ensure_weights():
     os.makedirs(os.path.dirname(WEIGHTS_PATH), exist_ok=True)
     with st.spinner("Downloading model weights (first run only)…"):
         try:
-            # FIXED: Removed `fuzzy=True` which caused the crash on newer gdown versions
             gdown.download(
                 id=WEIGHTS_FILE_ID,
                 output=WEIGHTS_PATH,
@@ -138,7 +137,7 @@ def strokes_to_png(strokes, linewidth=1.5):
 def run_generation(
     text, style_vector, char_spacing, word_spacing, italics, boldness, seqlen=None
 ):
-    """Run diffusion → apply style controllers → return (raw, styled, linewidth)."""
+    """Run diffusion → apply style controllers → return (styled, linewidth)."""
     import tensorflow as tf
     import utils
     import style_controller
@@ -171,6 +170,9 @@ def run_generation(
 
     # 2. Mathematical style controllers
     config = style_controller.StyleConfig()
+    # Disable clamping so the larger slider ranges (up to +/- 3.0) actually take effect
+    config.clamp_controls = False 
+    
     styled, lw = style_controller.apply_all_styles(
         raw,
         text,
@@ -180,7 +182,7 @@ def run_generation(
         boldness=boldness,
         config=config,
     )
-    return raw, styled, lw
+    return styled, lw
 
 
 # ------------------------------------------------------------------
@@ -199,21 +201,22 @@ with st.sidebar:
     text = st.text_input("Text to generate", value="Hello World", max_chars=200)
 
     st.header("🎨 Style Controls")
+    # Increased range from [-1.0, 1.0] to [-3.0, 3.0]
     char_spacing = st.slider(
-        "Character spacing", -1.0, 1.0, 0.0, 0.05,
-        help="-1 = tighter, 0 = original, +1 = wider"
+        "Character spacing", -3.0, 3.0, 0.0, 0.1,
+        help="-3 = extremely tight, 0 = original, +3 = extremely wide"
     )
     word_spacing = st.slider(
-        "Word spacing", -1.0, 1.0, 0.0, 0.05,
-        help="-1 = tighter, 0 = original, +1 = wider"
+        "Word spacing", -3.0, 3.0, 0.0, 0.1,
+        help="-3 = extremely tight, 0 = original, +3 = extremely wide"
     )
     italics = st.slider(
-        "Italics (slant)", -1.0, 1.0, 0.0, 0.05,
-        help="-1 = backward slant, 0 = upright, +1 = forward slant"
+        "Italics (slant)", -3.0, 3.0, 0.0, 0.1,
+        help="-3 = extreme backward slant, 0 = upright, +3 = extreme forward slant"
     )
     boldness = st.slider(
-        "Boldness", -1.0, 1.0, 0.0, 0.05,
-        help="-1 = thinner stroke, 0 = original, +1 = thicker stroke"
+        "Boldness", -3.0, 3.0, 0.0, 0.1,
+        help="-3 = extremely thin, 0 = original, +3 = extremely thick"
     )
 
     st.header("⚙️ Options")
@@ -229,7 +232,6 @@ with st.sidebar:
         "Writer style reference (optional)",
         type=["png", "jpg", "jpeg", "tif", "tiff"],
     )
-    compare = st.checkbox("Show original alongside styled", value=True)
     generate_btn = st.button("✨ Generate", type="primary", use_container_width=True)
 
 # Session state for the last result so the download buttons survive reruns
@@ -253,7 +255,7 @@ if generate_btn:
                 import tensorflow as tf
                 style_vec = style_extractor(tf.expand_dims(writer_img, 0))
 
-                raw, styled, lw = run_generation(
+                styled, lw = run_generation(
                     text,
                     style_vec,
                     char_spacing,
@@ -264,10 +266,8 @@ if generate_btn:
                 )
 
                 st.session_state.result = {
-                    "orig_png": strokes_to_png(raw, linewidth=1.5),
                     "mod_png": strokes_to_png(styled, linewidth=lw),
                     "text": text,
-                    "compare": compare,
                 }
         except Exception as e:
             st.error(f"Generation failed: {e}")
@@ -277,38 +277,15 @@ if generate_btn:
 if st.session_state.result is not None:
     res = st.session_state.result
 
-    if res["compare"]:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Original")
-            st.image(res["orig_png"], use_container_width=True)
-            st.download_button(
-                "📥 Download original",
-                data=res["orig_png"],
-                file_name="handwriting_original.png",
-                mime="image/png",
-                use_container_width=True,
-            )
-        with col2:
-            st.subheader("Styled")
-            st.image(res["mod_png"], use_container_width=True)
-            st.download_button(
-                "📥 Download styled",
-                data=res["mod_png"],
-                file_name="handwriting_styled.png",
-                mime="image/png",
-                use_container_width=True,
-            )
-    else:
-        st.subheader("Generated")
-        st.image(res["mod_png"], use_container_width=True)
-        st.download_button(
-            "📥 Download image",
-            data=res["mod_png"],
-            file_name="handwriting.png",
-            mime="image/png",
-            use_container_width=True,
-        )
+    st.subheader("Generated")
+    st.image(res["mod_png"], use_container_width=True)
+    st.download_button(
+        "📥 Download image",
+        data=res["mod_png"],
+        file_name="handwriting.png",
+        mime="image/png",
+        use_container_width=True,
+    )
 else:
     st.info(
         "Configure the controls on the left and click **✨ Generate** to create handwriting."
