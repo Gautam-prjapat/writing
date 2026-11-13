@@ -75,9 +75,7 @@ def load_style_extractor():
 # Helper functions
 # ------------------------------------------------------------------
 def read_writer_image(file_obj):
-    """Read an uploaded image file and preprocess it exactly like training."""
     import preprocessing
-
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         tmp.write(file_obj.getvalue())
         tmp_path = tmp.name
@@ -89,32 +87,30 @@ def read_writer_image(file_obj):
 
 
 def default_writer_image():
-    """Pick a random asset from ./assets, or fall back to a blank canvas."""
     import preprocessing
-
     if os.path.isdir("./assets"):
         assets = [
             f for f in os.listdir("./assets")
             if f.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff"))
         ]
         if assets:
-            return preprocessing.read_img(
-                os.path.join("./assets", assets[0]), 96
-            )
-    # Blank white canvas — the model will produce a "generic" style
+            return preprocessing.read_img(os.path.join("./assets", assets[0]), 96)
+    # Blank white canvas fallback
     return np.full((96, 400, 1), 255, dtype=np.uint8)
 
 
 def strokes_to_png(strokes, linewidth=1.5):
-    """Render a stroke array (N,3) — (dx,dy,pen_lift) — to PNG bytes."""
+    """Exact replica of utils.show() rendering logic."""
     pos = np.cumsum(strokes[:, :2], axis=0)
     prev_ind = 0
+    W, H = np.max(pos, axis=0) - np.min(pos, axis=0)
+    
+    # Match local utils.show logic exactly
+    scale = 1
+    fig_w = scale * W / H if H > 0 else scale
+    fig_h = scale
 
-    W = float(np.max(pos[:, 0]) - np.min(pos[:, 0])) + 1e-6
-    H = float(np.max(pos[:, 1]) - np.min(pos[:, 1])) + 1e-6
-    fig_w = float(np.clip(10.0 * W / H, 6.0, 18.0))
-
-    fig, ax = plt.subplots(figsize=(fig_w, 4))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     for ind, val in enumerate(strokes[:, 2]):
         if val > 0.5:
             if ind > prev_ind:
@@ -137,7 +133,6 @@ def strokes_to_png(strokes, linewidth=1.5):
 def run_generation(
     text, style_vector, char_spacing, word_spacing, italics, boldness, seqlen=None
 ):
-    """Run diffusion → apply style controllers → return (styled, linewidth)."""
     import tensorflow as tf
     import utils
     import style_controller
@@ -148,10 +143,8 @@ def run_generation(
 
     if not seqlen or seqlen <= 0:
         seqlen = len(text) * 16
-    # Sequence length must be divisible by 8
     seqlen = seqlen - (seqlen % 8) + 8
 
-    # 1. Base generation (all controls zeroed inside run_batch_inference)
     raw = utils.run_batch_inference(
         model,
         beta_set,
@@ -168,18 +161,22 @@ def run_generation(
         boldness=0.0,
     )[0]
 
-    # 2. Mathematical style controllers
     config = style_controller.StyleConfig()
-    # Disable clamping so the larger slider ranges (up to +/- 3.0) actually take effect
-    config.clamp_controls = False 
     
+    # We map the -3.0 to 3.0 sliders back into the safe -1.0 to 1.0 range
+    # for the underlying math, but keep the UI responsive.
+    safe_char = np.clip(char_spacing / 3.0, -1.0, 1.0)
+    safe_word = np.clip(word_spacing / 3.0, -1.0, 1.0)
+    safe_italics = np.clip(italics / 3.0, -1.0, 1.0)
+    safe_boldness = np.clip(boldness / 3.0, -1.0, 1.0)
+
     styled, lw = style_controller.apply_all_styles(
         raw,
         text,
-        char_spacing=char_spacing,
-        word_spacing=word_spacing,
-        italics=italics,
-        boldness=boldness,
+        char_spacing=safe_char,
+        word_spacing=safe_word,
+        italics=safe_italics,
+        boldness=safe_boldness,
         config=config,
     )
     return styled, lw
@@ -189,10 +186,6 @@ def run_generation(
 # UI
 # ------------------------------------------------------------------
 st.title("✍️ Handwriting Style Transfer")
-st.caption(
-    "Diffusion-based handwriting generation with four mathematical style controllers: "
-    "character spacing, word spacing, italics (slant) and boldness."
-)
 
 ensure_weights()
 
@@ -201,43 +194,24 @@ with st.sidebar:
     text = st.text_input("Text to generate", value="Hello World", max_chars=200)
 
     st.header("🎨 Style Controls")
-    # Increased range from [-1.0, 1.0] to [-3.0, 3.0]
-    char_spacing = st.slider(
-        "Character spacing", -3.0, 3.0, 0.0, 0.1,
-        help="-3 = extremely tight, 0 = original, +3 = extremely wide"
-    )
-    word_spacing = st.slider(
-        "Word spacing", -3.0, 3.0, 0.0, 0.1,
-        help="-3 = extremely tight, 0 = original, +3 = extremely wide"
-    )
-    italics = st.slider(
-        "Italics (slant)", -3.0, 3.0, 0.0, 0.1,
-        help="-3 = extreme backward slant, 0 = upright, +3 = extreme forward slant"
-    )
-    boldness = st.slider(
-        "Boldness", -3.0, 3.0, 0.0, 0.1,
-        help="-3 = extremely thin, 0 = original, +3 = extremely thick"
-    )
+    char_spacing = st.slider("Character spacing", -3.0, 3.0, 0.0, 0.1)
+    word_spacing = st.slider("Word spacing", -3.0, 3.0, 0.0, 0.1)
+    italics = st.slider("Italics (slant)", -3.0, 3.0, 0.0, 0.1)
+    boldness = st.slider("Boldness", -3.0, 3.0, 0.0, 0.1)
 
     st.header("⚙️ Options")
-    seqlen = st.number_input(
-        "Sequence length (0 = auto)",
-        min_value=0,
-        max_value=4000,
-        value=0,
-        step=8,
-        help="Auto = 16 × len(text), rounded up to a multiple of 8.",
-    )
     writer_file = st.file_uploader(
         "Writer style reference (optional)",
         type=["png", "jpg", "jpeg", "tif", "tiff"],
     )
+    
+    if not os.path.isdir("./assets") and writer_file is None:
+        st.warning("⚠️ No `assets/` folder found. Please upload a reference image to get proper handwriting!")
+        
     generate_btn = st.button("✨ Generate", type="primary", use_container_width=True)
 
-# Session state for the last result so the download buttons survive reruns
 if "result" not in st.session_state:
     st.session_state.result = None
-
 
 if generate_btn:
     if not text.strip():
@@ -262,7 +236,6 @@ if generate_btn:
                     word_spacing,
                     italics,
                     boldness,
-                    seqlen if seqlen > 0 else None,
                 )
 
                 st.session_state.result = {
@@ -271,12 +244,9 @@ if generate_btn:
                 }
         except Exception as e:
             st.error(f"Generation failed: {e}")
-            st.exception(e)
 
-# -------- Render results --------
 if st.session_state.result is not None:
     res = st.session_state.result
-
     st.subheader("Generated")
     st.image(res["mod_png"], use_container_width=True)
     st.download_button(
@@ -287,6 +257,4 @@ if st.session_state.result is not None:
         use_container_width=True,
     )
 else:
-    st.info(
-        "Configure the controls on the left and click **✨ Generate** to create handwriting."
-    )
+    st.info("Configure the controls on the left and click **✨ Generate** to create handwriting.")
